@@ -28,10 +28,8 @@ class PileEnv():
 
         self.price_data = np.array(price_data[ self.Ta+1 : self.Td ])
 
-        # === For calculate reward === #
         self.mean_price = 0
         self.mean_price_after_charge = 0
-        # ============================ #
 
     def get_price_data(self):
         if len(self.price_data) <= 0:
@@ -39,14 +37,14 @@ class PileEnv():
         
         elif len(self.price_data) <= 4:
             nor_price = self.price_data/np.max(self.price_data)
-            return np.concatenate( ( nor_price, np.zeros( 27 - len(nor_price) ) ) )#.astype(np.float32)
+            return np.concatenate( ( nor_price, np.zeros( 27 - len(nor_price) ) ) )
         
         else:
             nor_price = self.price_data/np.max(self.price_data)
 
             now_15_data = nor_price[:4]
 
-            day_data = np.concatenate( ( nor_price, np.zeros( 96 - len(nor_price) ) ) )#.astype(np.float32)
+            day_data = np.concatenate( ( nor_price, np.zeros( 96 - len(nor_price) ) ) )
 
             future_hour_data = np.mean(day_data[4:].reshape(-1,4),axis=1)
 
@@ -58,7 +56,7 @@ class PileEnv():
 
                 future_hour_data[int(change_index)] = change_index_data
                 
-            return np.concatenate( ( now_15_data, future_hour_data ) )#.astype(np.float32)  
+            return np.concatenate( ( now_15_data, future_hour_data ) )
             
     def show_car_info(self):
         print(f"-- {self.pile_id:8} -- car[ SOC: {self.SOC:.3f} | Target: {self.SOC_T:.3f} | T_stay: {self.Ts:2d} | T_arrive: {self.Ta} | T_depart: {self.Td} | BC: {self.BC}| CE: {self.CE}|P_max_charge: {self.P_max_charge}|Flex:{self.get_flexibility()}]")
@@ -127,26 +125,23 @@ class StationEnv(AECEnv):
         "is_parallelizable": False,
     }
 
-    def __init__(self, mode = "train", N_piles = 5):
-        # self._seed()
+    def __init__(self, mode = "train", N_piles = 15, P_max_station=80):
         self.mode    = mode
-
         self.N_piles = N_piles
-
         self.possible_agents = [f"pile_{n}" for n in range( 1, self.N_piles + 1)]
-
         self.agents = self.possible_agents[:]
 
         # For AECEnv to select next agent
         self._agent_selector = agent_selector(self.agents) 
 
-        # -------- station setting ------------ #
         self.pile = { agent : None for agent in self.possible_agents }
         
-        self.P_pile = (5+np.random.rand()*3) #(3.5+np.random.rand()*1.5) #(kW)
+        self.P_pile = (5+np.random.rand()*5) #(kW)
 
-        self.P_max_station = self.N_piles*self.P_pile
-        self.P_max_station = 800
+        if self.mode == 'train':
+            self.P_max_station = self.N_piles*self.P_pile
+        else:
+            self.P_max_station = P_max_station
 
         self.car_type_list = [ "Chevy Volt", "Volkswagen E-Golf", "BMW i3", "Tesla Model S"]#, "Tesla Model S"
 
@@ -163,7 +158,7 @@ class StationEnv(AECEnv):
         # stop time step
         self.max_time_step = len(self.Pgrid_price)
 
-        #charge time 
+        # charge time 
         self.delat_t = 24/self.max_time_step
 
         # calculate cost
@@ -180,7 +175,7 @@ class StationEnv(AECEnv):
             12: 0.8, 13: 0.85, 14: 0.85, 15: 0.85, 16: 0.8, 17: 0.7, 18: 0.5, 19: 0.4, 20: 0.3, 21: 0.3, 22: 0.0, 23: 0.0
         }
 
-        # ============ Define space ============ #
+        # Define space
         self.action_spaces = { agent : spaces.Box( -1, 1, dtype=np.float32) for agent in self.agents}
 
         # [ T_to_T| T_stay| T_to_L|  T_to_U|   P_t_L|  P_t_U] + price
@@ -218,7 +213,7 @@ class StationEnv(AECEnv):
                     self.plot_data["SOC"][agent].append(self.pile[agent].SOC)
                     self.plot_data["SOC_T"][agent].append(self.pile[agent].SOC_T)
                     self.plot_data["P_action"][agent].append(self.P_plot_action[agent])
-                    self.plot_data["P_upper"][agent].append(self.observations[agent][4]) # state : [ T_to_T | T_stay | T_to_L | T_to_U | P_t_L | P_t_U ] + price
+                    self.plot_data["P_upper"][agent].append(self.observations[agent][4])
                     self.plot_data["P_lower"][agent].append(self.observations[agent][5])
                 else:
                     self.plot_data["SOC"][agent].append(0)
@@ -347,7 +342,7 @@ class StationEnv(AECEnv):
         for agent in update_list:
             pile_distribute_power = max( self.pile[agent].P_max_charge, remain_power*self.pile[agent].CE*(self.charge_power_max[agent]/total_charge_power) )
             
-            if self.pile[agent].get_flexibility_P_d(pile_distribute_power) > -0.00001 : # > 0 但因為有浮點誤差
+            if self.pile[agent].get_flexibility_P_d(pile_distribute_power) > -0.00001 :  # > 0 (floating-point error)
                 self.pile[agent].P_distribute = pile_distribute_power
                 flexibility_enough_pile.append(agent)
             else:
@@ -422,9 +417,11 @@ class StationEnv(AECEnv):
 
             P_t_upper = min( P_max_upper, max( 0, ( self.P_max_station - P_already - P_request )* power_distribute_rate)*self.pile[now_agent].CE )
 
-            if P_min_lower >= 0: # need to charge
+            if P_min_lower >= 0: 
+                # need to charge
                 P_t_lower = min( P_min_lower, P_t_upper)
-            else: # able to discharge
+            else: 
+                # able to discharge
                 P_t_lower = max( P_min_lower, (-1*self.P_max_station - P_already - P_request )/self.pile[now_agent].CE )
         else:
             P_t_upper = 0
@@ -437,7 +434,7 @@ class StationEnv(AECEnv):
         T_to_lower   = self.pile[now_agent].get_to_lower_time()
         T_to_upper   = self.pile[now_agent].get_to_upper_time()
         price_data   = self.pile[now_agent].get_price_data()
-        # [ T_to_T| T_stay| T_to_L|  T_to_U|   P_t_L|  P_t_U]
+
         return np.concatenate( ( [ T_to_request, T_stay, T_to_lower, T_to_upper, state_P_t_lower, state_P_t_upper], price_data ) ).astype(np.float32)
     
     def _seed(self, seed=None):
@@ -451,9 +448,7 @@ class StationEnv(AECEnv):
         print(f"set multi_env seed:{seed}")
 
     def reset(self, seed=None, options=None, select_pile = "pile_0", price_data = []):
-        # if seed is not None:
-        #     self._seed(seed=seed)
-        # ---------------- pettingzoo env need --------------- #
+        # ---------------- pettingzoo env need ---------------- #
         self.agents              = self.possible_agents[:]
         self.observations        = { agent: np.zeros(self.obs_len) for agent in self.agents }
         self.rewards             = { agent: 0     for agent in self.agents }
@@ -473,8 +468,8 @@ class StationEnv(AECEnv):
         if self.mode == "train":
             self.execute_Pgrid_price = []
             while len(self.execute_Pgrid_price) < 96:
-                self.execute_Pgrid_price = np.append(self.execute_Pgrid_price, [1+np.random.rand()*6]*np.random.randint(1,41) ).astype(np.float32) #5
-                
+                self.execute_Pgrid_price = np.append(self.execute_Pgrid_price, [1+np.random.rand()*6]*np.random.randint(1,26) ).astype(np.float32)
+
             self.execute_Pgrid_price = np.clip(self.execute_Pgrid_price[0:96] + np.random.normal(0,0.1,96), 1, 7)
 
         else:
@@ -483,10 +478,9 @@ class StationEnv(AECEnv):
             else:
                 self.execute_Pgrid_price = price_data 
 
-        # ------------------setting start time ------------------ #
+        # ------------------setting start time ---------------- #
         if self.mode == "train":
-            self.T_cur = np.random.randint(24,32)
-            # self.T_cur = np.random.randint(0,10)
+            self.T_cur = np.random.randint(0,15)
             self.select_pile = select_pile
             self._train_pre_set(select_pile = select_pile)
         else:
@@ -504,9 +498,7 @@ class StationEnv(AECEnv):
             "P_max_station" : self.P_max_station,
             "P_total" : [0]*self.T_cur
         }
-
         # ----------------------------------------------------- #
-        # self._move_to_next_time_step()
         self._move_to_next_iter()
         
         for agent in self.possible_agents:
@@ -533,27 +525,21 @@ class StationEnv(AECEnv):
 
             if len(self._agent_selector.agent_order):
                 if self.agent_selection not in self._agent_selector.agent_order:
-                    
                     self._agent_selector.reinit(self._agent_selector.agent_order)
                     self.agent_selection = self._agent_selector.next()
                     self.observations[self.agent_selection] = self._get_agent_obs(self.agent_selection)
             return
         
-        # pile state  [ T_to_T| T_stay| T_to_L|  T_to_U|   P_t_L|  P_t_U]
         now_agent = self.agent_selection
-        # agent_action = action[0]
-        # # used power ----------
-        # P_min = self.observations[now_agent][4]
-        # P_max = self.observations[now_agent][5]
-
-        # # charge used power
-        # soc_power = ( (agent_action + 1)/2*(P_max - P_min) + P_min )
-        # charge_power = soc_power*self.pile[now_agent].P_distribute
+        
+        ### different with RL ###
         charge_power = action[0]
+        #########################
 
         if self.mode != "train":
             self.P_plot_action[now_agent] = charge_power/ self.pile[now_agent].P_max_charge
-        # charge_soc ----------
+
+        # charge SOC
         self.pile[now_agent].charge(charge_power)
 
         if charge_power >= 0:
@@ -566,13 +552,9 @@ class StationEnv(AECEnv):
         self.charge_power_max[now_agent] = 0
 
         if self._agent_selector.is_last():
-            print(f'total_power:{sum(self.P_already.values())}')
-            print(self.P_already)
-            # ----------------- calculate reward for all agent ------------------- #
             self.step_reward = { agent : 0 for agent in self.possible_agents }
-            # ----------------- calculate reward for all agent ------------------- #
+            # ----------------- calculate reward for all agent ------------------- 
             for agent in self.agents:
-                # pile state  [ T_to_T| T_stay| T_to_L|  T_to_U|   P_t_L|  P_t_U]
                 if self.observations[agent][0] >= 0:
                     efficiency_1 = 1/self.pile[agent].CE
                 else:
@@ -598,7 +580,6 @@ class StationEnv(AECEnv):
 
             self._check_env_done()
             if not self.env_done:
-                # self._move_to_next_time_step()
                 self._move_to_next_iter()
             # ----------------- get next state ------------------- #
             for agent in self.possible_agents:
@@ -625,33 +606,21 @@ class StationEnv(AECEnv):
         # self._accumulate_rewards()
 
 if __name__ == "__main__":
-    # env = StationEnv(mode = "test", N_piles = 10)
-    env = StationEnv(mode = "train", N_piles = 10)
+    # env = StationEnv(mode = "test", N_piles = 15, P_max_station=80)
+    env = StationEnv(mode = "train", N_piles = 15, P_max_station=80)
     env.seed(0)
-
     env.reset( select_pile = np.random.choice(env.possible_agents))
-    # print(env.select_pile)
-    print(env.execute_Pgrid_price)
     time_step = env.T_cur
     env.render()
-
-    # pile state [ T_to_request, T_stay, T_to_lower, T_to_upper, P_t_lower, P_t_upper]
     print(f"\n----- Time_step : {env.T_cur//4}-{env.T_cur%4}({env.T_cur}) {env.charge_sequence} -----")
     print(f"              [ T_to_T| T_stay| T_to_L|  T_to_U|   P_t_L|  P_t_U]")
-    
-    print(env.agents)
     for agent in env.agent_iter():
         obs, reward, termination, truncation, info = env.last()
-        # print(obs)
 
         if termination or truncation:
             action = None
         else:
             action = env.action_space(agent).sample()
-            if action >= 0:
-                action = [-1]
-            else:
-                action = [-1]
 
         env.step(action)
 
